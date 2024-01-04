@@ -1,0 +1,203 @@
+---
+title: "Seminar"
+author: "Shira Maor"
+date: "2023-06-20"
+output:
+  pdf_document: default
+  html_document: default
+---
+
+# Data Prep
+
+```{r, echo = FALSE}
+# setup -------------------------------------------------------------------
+
+# general setup
+rm(list=ls()) # del all objects and functions
+gc() #cleans memory
+options(scipen=999) # tell R not to use Scientific notation
+options(digits = 5) # controls how many digits are printed by default
+
+# set\change working directory - make sure data is in same folder!
+
+# setwd("")
+
+seminardf <- read.csv("SEMINARDFUPDATED.csv", header = TRUE)
+```
+
+```{r}
+seminardf$Gender <- ifelse(seminardf$Gender == "מעדיף לא לענות", "Binary", seminardf$Gender)
+seminardf$District <- ifelse(seminardf$District == "מחוז ירושלים", "Jerusalem", seminardf$District)
+
+seminardf$extreme_ai_before <- (abs(seminardf$AI_affect_humanity_before - 5) + abs(seminardf$AI_affect_employment_longterm_before - 5) + abs(seminardf$feeling_of_AI_tech_before - 5))/3
+
+seminardf$extreme_ai_after <- (abs(seminardf$AI_affect_humanity_after - 5) + abs(seminardf$AI_affect_employment_longterm_after - 5) + abs(seminardf$feeling_of_AI_tech_after - 5))/3
+
+seminardf$extreme_samsmith_before <- (abs(seminardf$perception_of_sam_before - 5) + abs(seminardf$disappointment_of_cancelation_before - 5) + abs(seminardf$cancel_reason_perception_before - 5) + abs(seminardf$free_tickets_before - 5))/4
+
+seminardf$extreme_samsmith_after <- (abs(seminardf$perception_of_sam_after - 5) + abs(seminardf$disappointment_of_cancelation_after - 5) + abs(seminardf$cancel_reason_perception_after - 5) + abs(seminardf$free_tickets_after - 5))/4
+
+seminardf$ai_article <- 0
+seminardf$ai_article[seminardf$altman_ver_question %in% c("No", "Yes")] <- 1
+
+seminardf$sam_article <- 0
+seminardf$sam_article[seminardf$reason_for_cancelation_verquestion %in% c("LogisticReasons", "BDS")] <- 1
+
+seminardf$extreme_ai <- seminardf$extreme_ai_after - seminardf$extreme_ai_before
+seminardf$extreme_samsmith <- seminardf$extreme_samsmith_after - seminardf$extreme_samsmith_before
+
+seminardf_filtered<-seminardf[seminardf$knowledge_of_ai != 5, ]
+
+duplicated_df <- seminardf_filtered[rep(row.names(seminardf_filtered), each = 2), ]
+row.names(duplicated_df) <- NULL
+new_df <- duplicated_df[, c(1:8,31,33:34)]
+new_df[seq(1, nrow(new_df), by = 2), 11] <- ""
+new_df$subject <- "SamSmith"
+new_df$subject[new_df$extreme_samsmith == ""] <- "AI"
+new_df[seq(1, nrow(new_df), by = 2), 11] <- ""
+new_df[seq(2, nrow(new_df), by = 2), 10] <- ""
+new_df$extreme <- ifelse(seq_along(new_df$extreme_ai) %% 2 == 1, new_df$extreme_ai, new_df$extreme_samsmith)
+new_df$extreme <- as.numeric(new_df$extreme)
+
+
+## Title = 1, Article = 0.
+## only_title
+## If ai_article == 1 & Subject == AI => only_title = 0
+## If ai_article == 1 & Subject == SamSmith => only_title = 1
+## If ai_article == 0 & Subject == AI => only_title = 1
+## If ai_article == 0 & Subject == SamSmith => only_title = 0
+
+# Create a new column 'only_title' based on the logic
+new_df$only_title <- ifelse(new_df$ai_article == 1 & new_df$subject == 'SamSmith', 1,
+                        ifelse(new_df$ai_article == 0 & new_df$subject == 'AI', 1,
+                               ifelse(new_df$ai_article == 0 & new_df$subject == 'SamSmith', 0, 0)))
+
+## Factors
+new_df$Employment <- factor(new_df$Employment, levels = c("Retired", "Employed", "Unemployed"))
+new_df$Gender <- factor(new_df$Gender, levels = c("Binary", "Female", "Male"))
+new_df$Education <- factor(new_df$Education, levels = c("MastersDegree", "BachelorDegree", "PracticalEngineer", "HighSchool"))
+new_df$District <- factor(new_df$District, levels = c("WestBank", "Center", "South", "North", "Jerusalem"))
+new_df$Income <- factor(new_df$Income, levels = c("WayBelowAverage", "BelowAverage", "Average", "AboveAverage", "WayAboveAverage"))
+new_df$Religion <- factor(new_df$Religion, levels = c("Traditional", "Secular"))
+
+
+## Create std extreme variable for regressions
+
+mean_extreme <- mean(new_df$extreme)
+std_extreme <- sd(new_df$extreme)
+new_df$extreme_std <- (new_df$extreme - mean_extreme) / std_extreme
+```
+
+# Regression
+
+```{r}
+library(lfe)
+
+# Fixed effects model
+fe1 <- felm(extreme_std ~ only_title | ID + subject | 0 | 0, data = new_df, na.action = na.omit)
+summary(fe1)
+
+# Regression model with clustered errors
+lm1 <- felm(extreme_std ~ only_title + subject + Age + Gender + Education + District + Religion + Income + Employment | 0  | 0 | Age + Gender + Education + District + Religion + Income + Employment, data = new_df, na.action = na.omit)
+summary(lm1)
+```
+
+
+## Plots
+
+```{r}
+library(ggplot2)
+
+# Create a new dataframe with the aggregated values for each category
+df_summary <- aggregate(extreme ~ ai_article + subject, data = new_df, FUN = mean)
+
+# Add a column for the labels
+df_summary$label <- ifelse(df_summary$ai_article == 1,
+                           ifelse(df_summary$subject == "AI", "AI Article", "Sam Smith Article"),
+                           ifelse(df_summary$subject == "AI", "AI Title", "Sam Smith Title"))
+
+# Plot the histogram with separate bars for each category
+ggplot(df_summary, aes(x = label, y = extreme, fill = label)) +
+  geom_bar(stat = "identity") +
+  geom_text(aes(label = round(extreme,4)), vjust = -0.5, size = 3) +
+  xlab("Category") +
+  ylab("Mean of Extreme Values") +
+  scale_fill_manual(values = c("powderblue", "darkseagreen", "plum", "peachpuff")) +
+  labs(title = "Mean of Extreme Values by Category") +
+  theme_minimal()
+```
+
+# Export Regression
+
+```{r, echo = FALSE}
+library(stargazer)
+
+stargazer(fe1, title = "Fixed Effects (ID + Subject) Regression Results", out = "fe_table.html", type = "html")
+
+stargazer(lm1, title = "Clustered SE Regression Results (Demographic variables)", out = "clus_table.html", type = "html")
+```
+
+## SAM & AI
+
+```{r}
+
+# Create a new dataframe with odd-numbered rows
+ai_df <- new_df[seq(1, nrow(new_df), by = 2), ]
+sam_df <- new_df[seq(2, nrow(new_df), by = 2), ]
+
+ai_df$ID <- as.factor(ai_df$ID)
+sam_df$ID <- as.factor(sam_df$ID)
+row.names(ai_df) <- NULL
+row.names(sam_df) <- NULL
+
+# Regression model with clustered errors
+lm_ai <- lm(extreme_std ~ only_title + Age + Gender + Education + District + Religion + Income + Employment, data = ai_df)
+summary(lm_ai)
+lm_sam <- lm(extreme_std ~ only_title + Age + Gender + Education + District + Religion + Income + Employment, data = sam_df)
+summary(lm_sam)
+
+
+stargazer(lm_ai, title = "Regression Results For The AI Article", out = "lm_ai_table.html", type = "html")
+
+stargazer(lm_sam, title = "Regression Results For The Sam Smith Article", out = "lm_samsmith_table.html", type = "html")
+```
+
+
+# Statistics
+
+```{r}
+# Create a histogram using ggplot2
+ggplot(seminardf, aes(x = Age)) +
+  geom_histogram(binwidth = 5, fill = "plum", color = "black") +
+  labs(title = "Distribution of Ages",
+       x = "Age",
+       y = "Frequency")
+summary(seminardf)
+length(which(seminardf$Gender == "Female"))/70 * 100
+length(which(seminardf$Gender == "Male"))/70 * 100
+length(which(seminardf$Education == 'PracticalEngineer'))/70 * 100
+length(which(seminardf$Education == 'MastersDegree'))/70 * 100
+length(which(seminardf$Education == 'BachelorDegree'))/70 * 100
+length(which(seminardf$Education == 'HighSchool'))/70 * 100
+
+length(which(seminardf$District == 'Center'))/70 * 100
+length(which(seminardf$District == 'North'))/70 * 100
+length(which(seminardf$District == 'South'))/70 * 100
+length(which(seminardf$District == 'WestBank'))/70 * 100
+length(which(seminardf$District == 'Jerusalem'))/70 * 100
+
+length(which(seminardf$Religion == 'Secular'))/70 * 100
+
+length(which(seminardf$Income == 'AboveAverage'))/70 * 100
+length(which(seminardf$Income == 'WayAboveAverage'))/70 * 100
+length(which(seminardf$Income == 'Average'))/70 * 100
+length(which(seminardf$Income == 'BelowAverage'))/70 * 100
+length(which(seminardf$Income == 'WayBelowAverage'))/70 * 100
+
+length(which(seminardf$Employment == 'Employed'))/70 * 100
+length(which(seminardf$Employment == 'Unemployed'))/70 * 100
+length(which(seminardf$Employment == 'Retired'))/70 * 100
+
+
+
+```
